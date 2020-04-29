@@ -1,45 +1,83 @@
+# 命名ルール
+class NamingRule {
+    [string]$RootDir
+    [string]$Version
+
+    NamingRule( [string]$RootDir, [string]$Version ) {
+        $this.RootDir = $RootDir
+        $this.Version = $Version
+    }
+    [string]CommonDir() {
+        return $this.RootDir + "\common"
+    }
+    [string]CommonNodeDir() {
+        return $this.CommonDir() + "\node"
+    }
+    [string]CommonNpmDir() {
+        return $this.CommonDir() + "\npm_global"
+    }
+    [string]VersionsDir() {
+        return $this.RootDir + "\versions"
+    }
+    [string]Arch() {
+        $arch = "x86"
+        if( [Environment]::Is64BitOperatingSystem ) {
+            $arch = "x64"
+        }
+        return $arch
+    }
+    [string]DistName() {
+        $arch = $this.Arch()
+        $name = "node-v$($this.Version)-win-$arch"
+        return $name;
+    }
+    [string]DistNodeDir() {
+        return $this.VersionsDir() + "\" + $this.DistName();
+    }
+    [string]DistNpmDir() {
+        $dist = $this.DistName()
+        return $this.RootDir + "\versions\$dist\npm_global"
+    }
+    [string]Uri() {
+        $dist = $this.DistName()
+        $uri = "https://nodejs.org/dist/v$($this.Version)/$dist.zip"
+        return $uri
+    }
+}
+
 # zipファイルをダウンロードして展開する
 function Expand-WebArchive {
     param( [string]$Uri,
            [string]$DestinationPath )
     $tmp = New-TemporaryFile | Rename-Item -NewName { $_ -replace 'tmp$', 'zip' } -PassThru
     $ProgressPreference = 'SilentlyContinue'
-    Invoke-WebRequest -Uri $Uri -OutFile $tmp
-    Expand-Archive -Path $tmp -DestinationPath $DestinationPath
-    Remove-Item $tmp
-}
-
-# Node.jsのdist名を取得する
-function Get-NodeDistName {
-    param( [string]$Version )
-    $arch = "x86"
-    if( [Environment]::Is64BitOperatingSystem ) {
-        $arch = "x64"
+    try {
+        Invoke-WebRequest -Uri $Uri -OutFile $tmp
+        Expand-Archive -Path $tmp -DestinationPath $DestinationPath
+    } catch {
+        # とりあえず何もしない
+    } finally {
+        Remove-Item $tmp
     }
-    $name = "node-v$Version-win-$arch"
-    return $name;
-}
-
-# Node.jsのURLを取得する
-function Get-NodeDistUrl {
-    param( [string]$Version )
-    $dist = Get-NodeDistName -Version $Version
-    $uri = "https://nodejs.org/dist/v$Version/$dist.zip"
-    return $uri
 }
 
 # シンボリックリンクのターゲットを変更する
 function Update-SymbolicLink {
     param( [string]$From, [string]$To )
 
+    if( !( Test-Path -LiteralPath $To ) ) {
+        throw "リンク先がありません。: $To "
+    }
+
     if( Test-Path $From ) {
         if( Test-SymbolicLink -Path $From ) {
             Remove-Item -Recurse -Force -Path $From
         } else {
-            throw "$From はシンボリックリンクではありません。"
+            throw "シンボリックリンクではありません。ファイルを削除するか移動してください。: $From"
         }
-        New-Item -Force -Path $From -ItemType Junction -Value $To 
     }
+
+    New-Item -Force -Path $From -ItemType Junction -Value $To
 }
 
 # シンボリックリンクを判定する
@@ -49,45 +87,38 @@ function Test-SymbolicLink {
 }
 
 function Install-Node {
-    param( [string]$Version,
-           [string]$RootDir )
-    $distName = Get-NodeDistName -Version $Version
-    $uri = Get-NodeDistUrl -Version $Version
-    $commonDir = $RootDir + "\common"
-    $versionsDir = $RootDir + "\versions"
-    $distPath = $versionsDir + "\" + $distName
-    $npmPath = $distPath + "\npm_global"
-
-    Write-host $RootDir
-    Write-host $versionsDir
-    Write-host $distPath
-    Write-host $npmPath
-    if( !( Test-Path $versionsDir ) ) {
-        New-Item $versionsDir -ItemType Directory
+    param( [string]$RootDir,
+           [string]$Version )
+    $rule = New-Object NamingRule( $RootDir, $Version )
+    
+    if( !( Test-Path $rule.VersionsDir() ) ) {
+        New-Item $rule.VersionsDir() -ItemType Directory
     }
 
-    if( !( Test-Path $distPath ) ) {
-        #Expand-WebArchive -Uri $uri -DestinationPath $versionsDir
+    if( !( Test-Path $rule.CommonDir() ) ) {
+        New-Item $rule.CommonDir() -ItemType Directory
+    }
+
+    if( !( Test-Path $rule.DistNodeDir() ) ) {
+        Expand-WebArchive -Uri $rule.Uri() -DestinationPath $rule.VersionsDir()
     }
     
-    if( !( Test-Path $versionsDir ) ) {
-        New-Item $versionsDir -ItemType Directory
+    if( !( Test-Path $rule.DistNpmDir() ) ) {
+        New-Item $rule.DistNpmDir() -ItemType Directory
     }
 
-    if( !( Test-Path $commonDir ) ) {
-        New-Item $commonDir -ItemType Directory
-    }
+    # 暫定: 強制的にPATH追加
+    $Env:Path = $rule.CommonNodeDir() + ";" + $rule.CommonNpmDir() + ";" + $Env:Path
 
-    if( !( Test-Path $npmPath ) ) {
-        New-Item $npmPath -ItemType Directory
-    }
+    # 暫定: インストールしたNode.jsにPATHが通るようシンボリックリンクを更新
+    Set-NodeVersion -RootDir $RootDir -Version $Version
 }
 
 # Node関連のシンボリックリンクを置き換える
 function Set-NodeVersion {
-    param( [string]$Version )
-    $common = "..\common"
-    $verRoot = "..\versions\$Version\"
-    Update-SymbolicLink -From "$common\node" -To "$verRoot\node"
-    Update-SymbolicLink -From "$common\npm_global" -To "$verRoot\npm_global"
+    param( [string]$RootDir,
+           [string]$Version )
+    $rule = New-Object NamingRule( $RootDir, $Version )
+    Update-SymbolicLink -From $rule.CommonNodeDir() -To $rule.DistNodeDir()
+    Update-SymbolicLink -From $rule.CommonNpmDir() -To $rule.DistNpmDir()
 }
