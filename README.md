@@ -1,4 +1,4 @@
-switch-node
+nodeswitch
 ====
 
 複数のバージョンのNode.jsを簡易的に管理するためのPowershellスクリプトと、それを起動するバッチファイル一式。
