@@ -112,6 +112,9 @@ function Install-Node {
 
     # 暫定: インストールしたNode.jsにPATHが通るようシンボリックリンクを更新
     Set-NodeVersion -RootDir $RootDir -Version $Version
+
+    # 暫定: グローバルインストール先を設定する
+    npm config set prefix $rule.CommonNpnDir()
 }
 
 # Node関連のシンボリックリンクを置き換える
